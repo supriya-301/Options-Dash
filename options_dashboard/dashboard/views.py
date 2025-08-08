@@ -1,7 +1,10 @@
+import hashlib
+import json
 import pandas as pd
 from datetime import datetime
 from django.shortcuts import render
 from django.http import JsonResponse
+from django.core.cache import cache
 from .utils import list_option_files, SPOT_CSV
 from .greeks import compute_greeks
 from .iv import implied_volatility
@@ -41,6 +44,21 @@ def get_greeks(request):
         merged = pd.merge(option_filtered, spot_df[['datetime', 'close']], on='datetime', how='inner', suffixes=('', '_spot'))
         greeks_data = []
 
+         input_summary = {
+            'strike': f['strike'],
+            'type': f['type'],
+            'expiry': f['expiry'],
+            'rate': r,
+            'spots': list(merged[['datetime', 'close']].astype(str).to_dict(orient='records'))
+        }
+        cache_key = 'greeks_' + hashlib.md5(json.dumps(input_summary, sort_keys=True).encode()).hexdigest()
+
+        greeks_data = cache.get(cache_key)
+        if greeks_data:
+            print(f"Cache hit for {f['strike']} {f['type']}")
+        else:
+            print(f"Cache miss for {f['strike']} {f['type']}, computing...")
+
         for _, row in merged.iterrows():
             S = row['close_spot']
             K = f['strike']
@@ -54,6 +72,8 @@ def get_greeks(request):
             g = compute_greeks(S, K, T, r, iv, f['type'])
             g['datetime'] = row['datetime'].strftime('%Y-%m-%d %H:%M')
             greeks_data.append(g)
+
+        cache.set(cache_key, greeks_data, timeout=300)
 
         result[f"{f['strike']}_{f['type']}"] = greeks_data
         print("greeks for", f['strike'], f['type'], "done")
